@@ -1,6 +1,5 @@
 import { Dispatcher } from '@revenge-mod/discord/common/flux'
-import { Stores } from '@revenge-mod/discord/flux'
-import { before } from '@revenge-mod/patcher'
+import { onFluxEventDispatched, Stores } from '@revenge-mod/discord/flux'
 import {
 	buildEmbeds,
 	fetchPreview,
@@ -58,7 +57,7 @@ interface CacheEntry {
 }
 
 interface DispatchEvent {
-	type?: string
+	type: string
 	[key: string]: unknown
 }
 
@@ -94,16 +93,19 @@ export default plugin({
 		stopped = false
 		reportError = message => plugin.reportError(message)
 
+		const handle = (event: DispatchEvent) => {
+			try {
+				handleDispatch(event)
+			} catch (error) {
+				reportError(`Failed to process message event: ${errorMessage(error)}`)
+			}
+			return event
+		}
+
 		cleanup(
-			before(Dispatcher, 'dispatch', args => {
-				const [event] = args
-				try {
-					handleDispatch(event)
-				} catch (error) {
-					reportError(`Failed to process message event: ${errorMessage(error)}`)
-				}
-				return args
-			}),
+			onFluxEventDispatched('MESSAGE_CREATE', handle),
+			onFluxEventDispatched('MESSAGE_UPDATE', handle),
+			onFluxEventDispatched('LOAD_MESSAGES_SUCCESS', handle),
 		)
 		setTimeout(refreshVisibleMessages, 0)
 
