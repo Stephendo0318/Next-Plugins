@@ -32,10 +32,6 @@ jobs:
           fetch-depth: 0 # Existing tags, so a re-run doesn't try to recreate one.
 
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 25
 
       - run: bun install
 
@@ -46,11 +42,16 @@ jobs:
         id: plan
         run: .github/scripts/plan-releases.sh
 
-      - name: Build plugins
+      - name: Verify planned plugin archives
         if: steps.plan.outputs.count != '0'
-        run: ./gradlew --no-daemon packageAllPlugins
-        env:
-          GITHUB_TOKEN: ${{ secrets.READ_PACKAGES_TOKEN }} # For Gradle to download the API dependency.
+        run: |
+          while IFS= read -r archive; do
+            if [ ! -f "$archive" ]; then
+              echo "::error::planned plugin archive is missing: $archive"
+              exit 1
+            fi
+            unzip -tq "$archive"
+          done < <(jq -r '.[].zip' "$PLAN")
 
       - name: Publish to the pool
         if: steps.plan.outputs.count != '0'
