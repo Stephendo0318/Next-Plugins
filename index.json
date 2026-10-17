@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "name": "Stephen's Revenge Plugins",
+  "description": "External plugins for Revenge.",
+  "plugins": {
+    "com.revenge.fx-embed-preview": {
+      "name": "Fx Embed Preview",
+      "description": "Renders rich previews for public social-media links in Discord messages.",
+      "author": "Revenge External Plugin",
+      "channels": {
+        "latest": "1.0.0"
+      },
+      "versions": {
+        "1.0.0": {
+          "url": "https://stephendo0318.github.io/Next-Plugins/pool/com.revenge.fx-embed-preview@1.0.0.zip",
+          "sha256": "0b4dea59e050eeadaa53656ab8acb053c707583fcbfe21a33081a87ed44f4574",
+          "size": 6365,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        }
+      }
+    }
+  }
+}
