@@ -100,11 +100,20 @@ export default plugin({
 			return event
 		}
 
-		cleanup(
-			onFluxEventDispatched('MESSAGE_CREATE', handle),
-			onFluxEventDispatched('MESSAGE_UPDATE', handle),
-			onFluxEventDispatched('LOAD_MESSAGES_SUCCESS', handle),
-		)
+		const unsubscribe: Array<() => void> = []
+		try {
+			unsubscribe.push(onFluxEventDispatched('MESSAGE_CREATE', handle))
+			unsubscribe.push(onFluxEventDispatched('MESSAGE_UPDATE', handle))
+			unsubscribe.push(onFluxEventDispatched('LOAD_MESSAGES_SUCCESS', handle))
+		} catch (error) {
+			for (const stop of unsubscribe) stop()
+			stopped = true
+			reportError(
+				`Fx Embed Preview could not register message listeners: ${errorMessage(error)}`,
+			)
+			return
+		}
+		cleanup(...unsubscribe)
 		setTimeout(refreshVisibleMessages, 0)
 
 		cleanup(() => {
