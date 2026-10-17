@@ -8,7 +8,7 @@
       "description": "Renders rich previews for public social-media links in Discord messages.",
       "author": "Revenge External Plugin",
       "channels": {
-        "latest": "1.0.2"
+        "latest": "1.0.3"
       },
       "versions": {
         "1.0.0": {
@@ -41,6 +41,19 @@
           "url": "https://stephendo0318.github.io/Next-Plugins/pool/com.revenge.fx-embed-preview@1.0.2.zip",
           "sha256": "69177d2cdca1f3f34a96d5dd22753a91a4670d8733fbdbe122956fd39869851f",
           "size": 6497,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        },
+        "1.0.3": {
+          "url": "https://stephendo0318.github.io/Next-Plugins/pool/com.revenge.fx-embed-preview@1.0.3.zip",
+          "sha256": "5b27491557cd26330711e0d297f62a74269659f42d50e3decfbe5cb1db178ef4",
+          "size": 6354,
           "dependencies": {
             "revenge.api": {
               "version": ">=1 <2"
