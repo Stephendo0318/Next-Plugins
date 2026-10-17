@@ -61,9 +61,6 @@ interface DispatchEvent {
 	[key: string]: unknown
 }
 
-const MessageStore = Stores.MessageStore as unknown as MessageStoreApi
-const SelectedChannelStore =
-	Stores.SelectedChannelStore as unknown as SelectedChannelStoreApi
 const providers = new Set<Provider>([
 	'x',
 	'reddit',
@@ -87,6 +84,7 @@ let activeRequests = 0
 let generation = 0
 let stopped = false
 let reportError: (message: string) => void = console.error
+const reportedStoreErrors = new Set<string>()
 
 export default plugin({
 	start({ cleanup, plugin }) {
@@ -117,7 +115,10 @@ export default plugin({
 			controllers.clear()
 			for (const key of injectedMessages) {
 				const ref = splitMessageKey(key)
-				const message = MessageStore.getMessage(ref.channelId, ref.messageId)
+				const message = getMessageStore()?.getMessage(
+					ref.channelId,
+					ref.messageId,
+				)
 				if (message && !((message.flags ?? 0) & SuppressEmbedsFlag))
 					dispatchEmbeds(ref, rawEmbeds.get(key) ?? [])
 			}
@@ -176,7 +177,10 @@ function processRawMessage(message: Message | undefined, partial: boolean) {
 		return
 	}
 
-	const storedMessage = MessageStore.getMessage(ref.channelId, ref.messageId)
+	const storedMessage = getMessageStore()?.getMessage(
+		ref.channelId,
+		ref.messageId,
+	)
 	const content =
 		typeof message.content === 'string'
 			? message.content
@@ -285,7 +289,7 @@ function refreshWaitingMessages(linkKey: string) {
 
 function refreshMessage(ref: MessageRef) {
 	if (stopped) return
-	const message = MessageStore.getMessage(ref.channelId, ref.messageId)
+	const message = getMessageStore()?.getMessage(ref.channelId, ref.messageId)
 	if (!message || (message.flags ?? 0) & SuppressEmbedsFlag) return
 
 	const links = parseLinks(message.content, providers, MaxPreviewsPerMessage)
@@ -308,7 +312,7 @@ function applyReadyEmbeds(
 	const { embeds, changed } = composeEmbeds(originals, links)
 	if (!changed) return
 
-	if (message === MessageStore.getMessage(ref.channelId, ref.messageId)) {
+	if (message === getMessageStore()?.getMessage(ref.channelId, ref.messageId)) {
 		dispatchEmbeds(ref, embeds)
 	} else {
 		message.embeds = embeds
@@ -397,7 +401,7 @@ function composeEmbeds(originals: Embed[], links: PreviewLink[]) {
 }
 
 function dispatchEmbeds(ref: MessageRef, embeds: Embed[]) {
-	const message = MessageStore.getMessage(ref.channelId, ref.messageId)
+	const message = getMessageStore()?.getMessage(ref.channelId, ref.messageId)
 	if (!message) return
 	const event = {
 		type: 'MESSAGE_UPDATE',
@@ -410,9 +414,15 @@ function dispatchEmbeds(ref: MessageRef, embeds: Embed[]) {
 			embeds,
 		},
 	}
-	void Dispatcher.dispatch(event).catch(error => {
-		reportError(`Failed to refresh message preview: ${errorMessage(error)}`)
-	})
+	try {
+		void Dispatcher.dispatch(event).catch(error => {
+			reportError(`Failed to refresh message preview: ${errorMessage(error)}`)
+			message.embeds = embeds
+		})
+	} catch (error) {
+		reportError(`Failed to dispatch message preview: ${errorMessage(error)}`)
+		message.embeds = embeds
+	}
 	const key = messageKey(ref)
 	if (embeds.some(isOurEmbed)) injectedMessages.add(key)
 	else injectedMessages.delete(key)
@@ -420,9 +430,9 @@ function dispatchEmbeds(ref: MessageRef, embeds: Embed[]) {
 }
 
 function refreshVisibleMessages() {
-	const channelId = SelectedChannelStore.getChannelId?.()
+	const channelId = getSelectedChannelStore()?.getChannelId?.()
 	if (!channelId) return
-	const collection = MessageStore.getMessages?.(channelId)
+	const collection = getMessageStore()?.getMessages?.(channelId)
 	const messages = collection?.toArray?.() ?? collection?._array ?? []
 	for (const message of messages) {
 		if (!message.id) continue
@@ -434,6 +444,30 @@ function refreshVisibleMessages() {
 		for (const link of links) trackMessage(link, ref)
 		refreshMessage(ref)
 	}
+}
+
+function getMessageStore() {
+	try {
+		return Stores.MessageStore as unknown as MessageStoreApi
+	} catch (error) {
+		reportStoreError('message', error)
+	}
+}
+
+function getSelectedChannelStore() {
+	try {
+		return Stores.SelectedChannelStore as unknown as SelectedChannelStoreApi
+	} catch (error) {
+		reportStoreError('selected-channel', error)
+	}
+}
+
+function reportStoreError(store: string, error: unknown) {
+	if (reportedStoreErrors.has(store)) return
+	reportedStoreErrors.add(store)
+	reportError(
+		`Fx Embed Preview could not access the ${store} store: ${errorMessage(error)}`,
+	)
 }
 
 function messageKey({ channelId, messageId }: MessageRef) {
