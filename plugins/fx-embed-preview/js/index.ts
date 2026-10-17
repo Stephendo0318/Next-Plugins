@@ -1,5 +1,4 @@
 import { Dispatcher } from '@revenge-mod/discord/common/flux'
-import { onFluxEventDispatched, Stores } from '@revenge-mod/discord/flux'
 import {
 	buildEmbeds,
 	fetchPreview,
@@ -38,18 +37,6 @@ interface MessageRef {
 	messageId: string
 }
 
-interface MessageStoreApi {
-	getMessage(channelId: string, messageId: string): Message | undefined
-	getMessages?(channelId: string): {
-		toArray?(): Message[]
-		_array?: Message[]
-	}
-}
-
-interface SelectedChannelStoreApi {
-	getChannelId?(): string | undefined
-}
-
 interface CacheEntry {
 	status: 'loading' | 'ready' | 'failed'
 	expiresAt: number
@@ -70,6 +57,7 @@ const providers = new Set<Provider>([
 	'bluesky',
 ])
 const cache = new Map<string, CacheEntry>()
+const knownMessages = new Map<string, Message>()
 const rawEmbeds = new Map<string, Embed[]>()
 const injectedMessages = new Set<string>()
 const waitingMessages = new Map<string, Map<string, MessageRef>>()
@@ -84,7 +72,11 @@ let activeRequests = 0
 let generation = 0
 let stopped = false
 let reportError: (message: string) => void = console.error
-const reportedStoreErrors = new Set<string>()
+const messageEvents = [
+	'MESSAGE_CREATE',
+	'MESSAGE_UPDATE',
+	'LOAD_MESSAGES_SUCCESS',
+]
 
 export default plugin({
 	start({ cleanup, plugin }) {
@@ -100,23 +92,39 @@ export default plugin({
 			return event
 		}
 
-		const unsubscribe: Array<() => void> = []
+		const subscribed: string[] = []
 		try {
-			unsubscribe.push(onFluxEventDispatched('MESSAGE_CREATE', handle))
-			unsubscribe.push(onFluxEventDispatched('MESSAGE_UPDATE', handle))
-			unsubscribe.push(onFluxEventDispatched('LOAD_MESSAGES_SUCCESS', handle))
+			for (const type of messageEvents) {
+				Dispatcher.subscribe(type, handle)
+				subscribed.push(type)
+			}
 		} catch (error) {
-			for (const stop of unsubscribe) stop()
+			for (const type of subscribed) {
+				try {
+					Dispatcher.unsubscribe(type, handle)
+				} catch (cleanupError) {
+					reportError(
+						`Failed to remove partial message listener: ${errorMessage(cleanupError)}`,
+					)
+				}
+			}
 			stopped = true
 			reportError(
 				`Fx Embed Preview could not register message listeners: ${errorMessage(error)}`,
 			)
 			return
 		}
-		cleanup(...unsubscribe)
-		setTimeout(refreshVisibleMessages, 0)
 
 		cleanup(() => {
+			for (const type of subscribed) {
+				try {
+					Dispatcher.unsubscribe(type, handle)
+				} catch (error) {
+					reportError(
+						`Failed to remove ${type} listener: ${errorMessage(error)}`,
+					)
+				}
+			}
 			stopped = true
 			generation++
 			requestQueue.length = 0
@@ -124,14 +132,12 @@ export default plugin({
 			controllers.clear()
 			for (const key of injectedMessages) {
 				const ref = splitMessageKey(key)
-				const message = getMessageStore()?.getMessage(
-					ref.channelId,
-					ref.messageId,
-				)
+				const message = knownMessages.get(key)
 				if (message && !((message.flags ?? 0) & SuppressEmbedsFlag))
 					dispatchEmbeds(ref, rawEmbeds.get(key) ?? [])
 			}
 			injectedMessages.clear()
+			knownMessages.clear()
 			rawEmbeds.clear()
 			waitingMessages.clear()
 			cache.clear()
@@ -165,7 +171,17 @@ function processRawMessage(message: Message | undefined, partial: boolean) {
 
 	const ref = { channelId: message.channel_id, messageId: message.id }
 	const key = messageKey(ref)
-	const embeds = message.embeds
+	const previous = knownMessages.get(key)
+	const known: Message = { ...previous, ...message }
+	if (
+		typeof message.content !== 'string' &&
+		typeof previous?.content === 'string'
+	)
+		known.content = previous.content
+	if (!Array.isArray(message.embeds) && Array.isArray(previous?.embeds))
+		known.embeds = previous.embeds
+
+	const embeds = known.embeds
 	if (Array.isArray(embeds)) {
 		const originals = embeds.filter(embed => !isOurEmbed(embed))
 		if (originals.length || embeds.length === 0 || !rawEmbeds.has(key)) {
@@ -173,38 +189,29 @@ function processRawMessage(message: Message | undefined, partial: boolean) {
 			trim(rawEmbeds, MaxCachedPreviews)
 		}
 		if (originals.length !== embeds.length) {
-			message.embeds = originals
+			known.embeds = originals
 			injectedMessages.delete(key)
 		}
 	} else if (!partial && !rawEmbeds.has(key)) {
 		rawEmbeds.set(key, [])
 		trim(rawEmbeds, MaxCachedPreviews)
 	}
+	knownMessages.set(key, known)
+	trim(knownMessages, MaxCachedPreviews)
 
-	if ((message.flags ?? 0) & SuppressEmbedsFlag) {
+	if ((known.flags ?? 0) & SuppressEmbedsFlag) {
 		injectedMessages.delete(key)
 		return
 	}
 
-	const storedMessage = getMessageStore()?.getMessage(
-		ref.channelId,
-		ref.messageId,
-	)
-	const content =
-		typeof message.content === 'string'
-			? message.content
-			: storedMessage?.content
-	const links = parseLinks(content, providers, MaxPreviewsPerMessage)
+	const links = parseLinks(known.content, providers, MaxPreviewsPerMessage)
 	if (!links.length) {
-		if (injectedMessages.delete(key)) message.embeds = rawEmbeds.get(key) ?? []
+		if (injectedMessages.delete(key))
+			setTimeout(() => dispatchEmbeds(ref, rawEmbeds.get(key) ?? []), 0)
 		return
 	}
 
 	for (const link of links) trackMessage(link, ref)
-	const ready = links.some(link => getCacheEntry(link.key)?.status === 'ready')
-	if (ready && Array.isArray(message.embeds))
-		applyReadyEmbeds(message, ref, links)
-
 	setTimeout(() => refreshMessage(ref), 0)
 }
 
@@ -298,7 +305,7 @@ function refreshWaitingMessages(linkKey: string) {
 
 function refreshMessage(ref: MessageRef) {
 	if (stopped) return
-	const message = getMessageStore()?.getMessage(ref.channelId, ref.messageId)
+	const message = knownMessages.get(messageKey(ref))
 	if (!message || (message.flags ?? 0) & SuppressEmbedsFlag) return
 
 	const links = parseLinks(message.content, providers, MaxPreviewsPerMessage)
@@ -321,12 +328,7 @@ function applyReadyEmbeds(
 	const { embeds, changed } = composeEmbeds(originals, links)
 	if (!changed) return
 
-	if (message === getMessageStore()?.getMessage(ref.channelId, ref.messageId)) {
-		dispatchEmbeds(ref, embeds)
-	} else {
-		message.embeds = embeds
-		injectedMessages.add(key)
-	}
+	dispatchEmbeds(ref, embeds)
 }
 
 function composeEmbeds(originals: Embed[], links: PreviewLink[]) {
@@ -410,8 +412,10 @@ function composeEmbeds(originals: Embed[], links: PreviewLink[]) {
 }
 
 function dispatchEmbeds(ref: MessageRef, embeds: Embed[]) {
-	const message = getMessageStore()?.getMessage(ref.channelId, ref.messageId)
+	const key = messageKey(ref)
+	const message = knownMessages.get(key)
 	if (!message) return
+	message.embeds = embeds
 	const event = {
 		type: 'MESSAGE_UPDATE',
 		__fxp: true,
@@ -432,51 +436,9 @@ function dispatchEmbeds(ref: MessageRef, embeds: Embed[]) {
 		reportError(`Failed to dispatch message preview: ${errorMessage(error)}`)
 		message.embeds = embeds
 	}
-	const key = messageKey(ref)
 	if (embeds.some(isOurEmbed)) injectedMessages.add(key)
 	else injectedMessages.delete(key)
 	trim(injectedMessages, MaxCachedPreviews)
-}
-
-function refreshVisibleMessages() {
-	const channelId = getSelectedChannelStore()?.getChannelId?.()
-	if (!channelId) return
-	const collection = getMessageStore()?.getMessages?.(channelId)
-	const messages = collection?.toArray?.() ?? collection?._array ?? []
-	for (const message of messages) {
-		if (!message.id) continue
-		const ref = {
-			channelId: message.channel_id ?? channelId,
-			messageId: message.id,
-		}
-		const links = parseLinks(message.content, providers, MaxPreviewsPerMessage)
-		for (const link of links) trackMessage(link, ref)
-		refreshMessage(ref)
-	}
-}
-
-function getMessageStore() {
-	try {
-		return Stores.MessageStore as unknown as MessageStoreApi
-	} catch (error) {
-		reportStoreError('message', error)
-	}
-}
-
-function getSelectedChannelStore() {
-	try {
-		return Stores.SelectedChannelStore as unknown as SelectedChannelStoreApi
-	} catch (error) {
-		reportStoreError('selected-channel', error)
-	}
-}
-
-function reportStoreError(store: string, error: unknown) {
-	if (reportedStoreErrors.has(store)) return
-	reportedStoreErrors.add(store)
-	reportError(
-		`Fx Embed Preview could not access the ${store} store: ${errorMessage(error)}`,
-	)
 }
 
 function messageKey({ channelId, messageId }: MessageRef) {
