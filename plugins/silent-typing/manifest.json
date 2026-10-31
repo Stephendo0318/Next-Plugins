@@ -1,0 +1,20 @@
+{
+	"format": 1,
+	"id": "palmdevs.silent-typing",
+	"name": "Silent Typing",
+	"description": "Disables the typing indicator when you type.",
+	"author": "Palm <629368283354628116> (https://github.com/sponsors/PalmDevs \"Donations\") (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")",
+	"icon": "KeyboardIcon",
+	"version": "1.1.1",
+	"dependencies": {
+		"revenge.api": {
+			"version": ">=1 <2"
+		},
+		"discord": {
+			"version": "*"
+		}
+	},
+	"dist": {
+		"script": "index.js"
+	}
+}
